@@ -3,6 +3,8 @@ const { template } = require('@babel/core');
 const { defaults } = require('@istanbuljs/schema');
 const { SourceCoverage } = require('./source-coverage');
 const { SHA, MAGIC_KEY, MAGIC_VALUE } = require('./constants');
+const fs = require('fs');
+const path = require('path');
 
 // pattern for istanbul to ignore a section
 const COMMENT_RE = /^\s*istanbul\s+ignore\s+(if|else|next)(?=\W|$)/;
@@ -10,12 +12,66 @@ const COMMENT_RE = /^\s*istanbul\s+ignore\s+(if|else|next)(?=\W|$)/;
 const COMMENT_FILE_RE = /^\s*istanbul\s+ignore\s+(file)(?=\W|$)/;
 // source map URL pattern
 const SOURCE_MAP_RE = /[#@]\s*sourceMappingURL=(.*)\s*$/m;
+// source map URL pattern when ignore patterns are provided
+const SOURCE_MAP_RE_WITH_IGNORE_PATTERNS = /[#@]\s*sourceMappingURL=(.*)\s*$/gm;
 
 // generate a variable name from hashing the supplied file path
 function genVar(filename) {
     const hash = createHash(SHA);
     hash.update(filename);
     return 'cov_' + parseInt(hash.digest('hex').substr(0, 12), 16).toString(36);
+}
+
+// Determine if we should try to read the source map from the file in order to skip instrumentation of files and package paths
+function shouldTryToReadSourceMap(
+    inputSourceMap,
+    skipFilesAndPackagePaths,
+    skipInstrumentationIfNoSourceMap
+) {
+    return (
+        inputSourceMap === undefined &&
+        (skipFilesAndPackagePaths?.length > 0 ||
+            skipInstrumentationIfNoSourceMap)
+    );
+}
+
+// Determine if we should initialize the source map consumer
+function shouldInitializeSourceMapConsumer(
+    skipFilesAndPackagePaths,
+    skipInstrumentationIfNoSourceMap
+) {
+    return (
+        skipFilesAndPackagePaths.length > 0 || skipInstrumentationIfNoSourceMap
+    );
+}
+
+// Function to read the source map from the file
+function readSourceMapFromFile(sourceFilePath) {
+    // First check for inline source map
+    const content = fs.readFileSync(sourceFilePath, 'utf8');
+    const sourceMapMatches = [...content.matchAll(SOURCE_MAP_RE_WITH_IGNORE_PATTERNS)];
+    // Get the last matching source map
+    if (sourceMapMatches.length > 0) {
+        const sourceMapData = sourceMapMatches[sourceMapMatches.length - 1][1];
+        // Check if it's a data URL
+        if (sourceMapData.startsWith('data:application/json;base64,')) {
+            const base64Data = sourceMapData.replace(
+                'data:application/json;base64,',
+                ''
+            );
+            const decodedMap = Buffer.from(base64Data, 'base64').toString();
+            return JSON.parse(decodedMap);
+        } else {
+            // Try to read external source map file
+            const mapPath = path.resolve(
+                path.dirname(sourceFilePath),
+                sourceMapData
+            );
+            if (fs.existsSync(mapPath)) {
+                return JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+            }
+        }
+    }
 }
 
 // VisitState holds the state of the visitor, provides helper functions
@@ -26,28 +82,69 @@ class VisitState {
         sourceFilePath,
         inputSourceMap,
         ignoreClassMethods = [],
-        reportLogic = false
+        reportLogic = false,
+        skipFilesAndPackagePaths = [],
+        skipInstrumentationIfNoSourceMap = false,
+        customLogger = null
     ) {
         this.varName = genVar(sourceFilePath);
         this.attrs = {};
         this.nextIgnore = null;
         this.cov = new SourceCoverage(sourceFilePath);
-
+        this.sourceMapConsumer = null;
+        this.skipFilesAndPackagePaths = skipFilesAndPackagePaths;
+        this.skipInstrumentationIfNoSourceMap = skipInstrumentationIfNoSourceMap;
+        this.customLogger = customLogger || console;
+        // Try to read source map if not provided and either skip files and package paths is provided or skip instrumentation is true
+        if (
+            shouldTryToReadSourceMap(
+                inputSourceMap,
+                skipFilesAndPackagePaths,
+                skipInstrumentationIfNoSourceMap
+            )
+        ) {
+            try {
+                inputSourceMap = readSourceMapFromFile(sourceFilePath);
+            } catch (err) {
+                this.customLogger.error(
+                    `Failed to read source map for ${sourceFilePath}:`,
+                    err.message
+                );
+            }
+        }
         if (typeof inputSourceMap !== 'undefined') {
             this.cov.inputSourceMap(inputSourceMap);
+            // Initialize the source map consumer once and cache it
+            if (
+                shouldInitializeSourceMapConsumer(
+                    skipFilesAndPackagePaths,
+                    skipInstrumentationIfNoSourceMap
+                )
+            ) {
+                try {
+                    const sourceMap = require('source-map');
+                    const SourceMapConsumer = sourceMap.SourceMapConsumer;
+                    this.sourceMapConsumer = new SourceMapConsumer(
+                        inputSourceMap
+                    );
+                } catch (err) {
+                    this.customLogger.error(
+                        `Failed to initialize source map consumer:`,
+                        err.message
+                    );
+                }
+            }
         }
         this.ignoreClassMethods = ignoreClassMethods;
         this.types = types;
         this.sourceMappingURL = null;
         this.reportLogic = reportLogic;
     }
-
     // should we ignore the node? Yes, if specifically ignoring
     // or if the node is generated.
     shouldIgnore(path) {
         return this.nextIgnore || !path.node.loc;
     }
-
     // extract the ignore comment hint (next|if|else) or null
     hintFor(node) {
         let hint = null;
@@ -64,7 +161,6 @@ class VisitState {
         }
         return hint;
     }
-
     // extract a source map URL from comments and keep track of it
     maybeAssignSourceMapURL(node) {
         const extractURL = comments => {
@@ -84,7 +180,6 @@ class VisitState {
         extractURL(node.leadingComments);
         extractURL(node.trailingComments);
     }
-
     // for these expressions the statement counter needs to be hoisted, so
     // function name inference can be preserved
     counterNeedsHoisting(path) {
@@ -94,13 +189,47 @@ class VisitState {
             path.isClassExpression()
         );
     }
-
     // all the generic stuff that needs to be done on enter for every node
     onEnter(path) {
         const n = path.node;
 
+        // Try to get original source file from source map and skip if needed
+        if (n.loc && this.sourceMapConsumer) {
+            try {
+                const originalPosition = this.sourceMapConsumer.originalPositionFor(
+                    {
+                        line: n.loc.start.line,
+                        column: n.loc.start.column
+                    }
+                );
+                if (originalPosition && originalPosition.source) {
+                    // Check if the source file or module should be skipped
+                    if (
+                        this.skipFilesAndPackagePaths.some(skipPath =>
+                            originalPosition.source.includes(skipPath)
+                        )
+                    ) {
+                        this.nextIgnore = n;
+                        return;
+                    }
+                } else {
+                    this.nextIgnore = n;
+                    return;
+                }
+            } catch (err) {
+                this.customLogger.error(
+                    'Error processing source map when finding original position:',
+                    err
+                );
+            }
+        } else if (
+            !this.sourceMapConsumer &&
+            this.skipInstrumentationIfNoSourceMap
+        ) {
+            this.nextIgnore = n;
+            return;
+        }
         this.maybeAssignSourceMapURL(n);
-
         // if already ignoring, nothing more to do
         if (this.nextIgnore !== null) {
             return;
@@ -115,7 +244,6 @@ class VisitState {
         if (this.getAttr(path.node, 'skip-all') !== null) {
             this.nextIgnore = n;
         }
-
         // else check for ignored class methods
         if (
             path.isFunctionExpression() &&
@@ -134,7 +262,6 @@ class VisitState {
             return;
         }
     }
-
     // all the generic stuff on exit of a node,
     // including resetting ignores and custom node attrs
     onExit(path) {
@@ -145,13 +272,11 @@ class VisitState {
         // nuke all attributes for the node
         delete path.node.__cov__;
     }
-
     // set a node attribute for the supplied node
     setAttr(node, name, value) {
         node.__cov__ = node.__cov__ || {};
         node.__cov__[name] = value;
     }
-
     // retrieve a node attribute for the supplied node or null
     getAttr(node, name) {
         const c = node.__cov__;
@@ -160,7 +285,6 @@ class VisitState {
         }
         return c[name];
     }
-
     //
     increase(type, id, index) {
         const T = this.types;
@@ -183,12 +307,10 @@ class VisitState {
             )
         );
     }
-
     // Reads the logic expression conditions and conditionally increments truthy counter.
     increaseTrue(type, id, index, node) {
         const T = this.types;
         const tempName = `${this.varName}_temp`;
-
         return T.sequenceExpression([
             T.assignmentExpression(
                 '=',
@@ -211,7 +333,6 @@ class VisitState {
             )
         ]);
     }
-
     validateTrueNonTrivial(T, tempName) {
         return T.logicalExpression(
             '&&',
@@ -302,7 +423,6 @@ class VisitState {
             )
         );
     }
-
     insertCounter(path, increment) {
         const T = this.types;
         if (path.isBlockStatement()) {
@@ -340,7 +460,6 @@ class VisitState {
             );
         }
     }
-
     insertStatementCounter(path) {
         /* istanbul ignore if: paranoid check */
         if (!(path.node && path.node.loc)) {
@@ -350,7 +469,6 @@ class VisitState {
         const increment = this.increase('s', index, null);
         this.insertCounter(path, increment);
     }
-
     insertFunctionCounter(path) {
         const T = this.types;
         /* istanbul ignore if: paranoid check */
@@ -358,7 +476,6 @@ class VisitState {
             return;
         }
         const n = path.node;
-
         let dloc = null;
         // get location for declaration
         switch (n.type) {
@@ -376,7 +493,6 @@ class VisitState {
                 end: { line: n.loc.start.line, column: n.loc.start.column + 1 }
             };
         }
-
         const name = path.node.id ? path.node.id.name : path.node.name;
         const index = this.cov.newFunction(name, dloc, path.node.body.loc);
         const increment = this.increase('f', index, null);
@@ -391,12 +507,10 @@ class VisitState {
             );
         }
     }
-
     getBranchIncrement(branchName, loc) {
         const index = this.cov.addBranchPath(branchName, loc);
         return this.increase('b', branchName, index);
     }
-
     getBranchLogicIncrement(path, branchName, loc) {
         const index = this.cov.addBranchPath(branchName, loc);
         return [
@@ -404,7 +518,6 @@ class VisitState {
             this.increaseTrue('bT', branchName, index, path.node)
         ];
     }
-
     insertBranchCounter(path, branchName, loc) {
         const increment = this.getBranchIncrement(
             branchName,
@@ -412,7 +525,6 @@ class VisitState {
         );
         this.insertCounter(path, increment);
     }
-
     findLeaves(node, accumulator, parent, property) {
         if (!node) {
             return;
@@ -431,8 +543,13 @@ class VisitState {
             });
         }
     }
+    // IMPORTANT: Make sure to call this method in order to free up resources and avoid memory leaks.
+    destroy() {
+        if (this.sourceMapConsumer && this.sourceMapConsumer.destroy) {
+            this.sourceMapConsumer.destroy();
+        }
+    }
 }
-
 // generic function that takes a set of visitor methods and
 // returns a visitor object with `enter` and `exit` properties,
 // such that:
@@ -461,30 +578,24 @@ function entries(...enter) {
         exit
     };
 }
-
 function coverStatement(path) {
     this.insertStatementCounter(path);
 }
-
 /* istanbul ignore next: no node.js support */
 function coverAssignmentPattern(path) {
     const n = path.node;
     const b = this.cov.newBranch('default-arg', n.loc);
     this.insertBranchCounter(path.get('right'), b);
 }
-
 function coverFunction(path) {
     this.insertFunctionCounter(path);
 }
-
 function coverVariableDeclarator(path) {
     this.insertStatementCounter(path.get('init'));
 }
-
 function coverClassPropDeclarator(path) {
     this.insertStatementCounter(path.get('value'));
 }
-
 function makeBlock(path) {
     const T = this.types;
     if (!path.node) {
@@ -497,26 +608,22 @@ function makeBlock(path) {
         path.node.leadingComments = undefined;
     }
 }
-
 function blockProp(prop) {
     return function(path) {
         makeBlock.call(this, path.get(prop));
     };
 }
-
 function makeParenthesizedExpressionForNonIdentifier(path) {
     const T = this.types;
     if (path.node && !path.isIdentifier()) {
         path.replaceWith(T.parenthesizedExpression(path.node));
     }
 }
-
 function parenthesizedExpressionProp(prop) {
     return function(path) {
         makeParenthesizedExpressionForNonIdentifier.call(this, path.get(prop));
     };
 }
-
 function convertArrowExpression(path) {
     const n = path.node;
     const T = this.types;
@@ -533,14 +640,12 @@ function convertArrowExpression(path) {
         n.body.body[0].loc = bloc;
     }
 }
-
 function coverIfBranches(path) {
     const n = path.node;
     const hint = this.hintFor(n);
     const ignoreIf = hint === 'if';
     const ignoreElse = hint === 'else';
     const branch = this.cov.newBranch('if', n.loc);
-
     if (ignoreIf) {
         this.setAttr(n.consequent, 'skip-all', true);
     } else {
@@ -552,12 +657,10 @@ function coverIfBranches(path) {
         this.insertBranchCounter(path.get('alternate'), branch);
     }
 }
-
 function createSwitchBranch(path) {
     const b = this.cov.newBranch('switch', path.node.loc);
     this.setAttr(path.node, 'branchName', b);
 }
-
 function coverSwitchCase(path) {
     const T = this.types;
     const b = this.getAttr(path.parentPath.node, 'branchName');
@@ -568,13 +671,11 @@ function coverSwitchCase(path) {
     const increment = this.getBranchIncrement(b, path.node.loc);
     path.node.consequent.unshift(T.expressionStatement(increment));
 }
-
 function coverTernary(path) {
     const n = path.node;
     const branch = this.cov.newBranch('cond-expr', path.node.loc);
     const cHint = this.hintFor(n.consequent);
     const aHint = this.hintFor(n.alternate);
-
     if (cHint !== 'next') {
         this.insertBranchCounter(path.get('consequent'), branch);
     }
@@ -582,7 +683,6 @@ function coverTernary(path) {
         this.insertBranchCounter(path.get('alternate'), branch);
     }
 }
-
 function coverLogicalExpression(path) {
     const T = this.types;
     if (path.parentPath.node.type === 'LogicalExpression') {
@@ -601,7 +701,6 @@ function coverLogicalExpression(path) {
         if (hint === 'next') {
             continue;
         }
-
         if (this.reportLogic) {
             const increment = this.getBranchLogicIncrement(
                 leaf,
@@ -617,7 +716,6 @@ function coverLogicalExpression(path) {
             ]);
             continue;
         }
-
         const increment = this.getBranchIncrement(b, leaf.node.loc);
         if (!increment) {
             continue;
@@ -628,10 +726,13 @@ function coverLogicalExpression(path) {
         ]);
     }
 }
-
-const methodLevelVisitors = ['ArrowFunctionExpression', 'ClassMethod', 'ObjectMethod', 'FunctionDeclaration',
-  'FunctionExpression'];
-
+const methodLevelVisitors = [
+    'ArrowFunctionExpression',
+    'ClassMethod',
+    'ObjectMethod',
+    'FunctionDeclaration',
+    'FunctionExpression'
+];
 const codeVisitor = {
     ArrowFunctionExpression: entries(convertArrowExpression, coverFunction),
     AssignmentPattern: entries(coverAssignmentPattern),
@@ -673,15 +774,13 @@ const codeVisitor = {
     LogicalExpression: entries(coverLogicalExpression)
 };
 const methodVisitor = {};
-
 Object.keys(codeVisitor).forEach(key => {
-  if (methodLevelVisitors.includes(key)) {
-    methodVisitor[key] = codeVisitor[key];
-  } else {
-    methodVisitor[key] = entries();
-  }
+    if (methodLevelVisitors.includes(key)) {
+        methodVisitor[key] = codeVisitor[key];
+    } else {
+        methodVisitor[key] = entries();
+    }
 });
-
 const globalTemplateAlteredFunction = template(`
         var Function = (function(){}).constructor;
         var global = (new Function(GLOBAL_COVERAGE_SCOPE))();
@@ -705,7 +804,6 @@ const coverageTemplate = template(
         if (!coverage[path] || coverage[path].hash !== hash) {
             coverage[path] = coverageData;
         }
-
         var actualCoverage = coverage[path];
         {
             // @ts-ignore
@@ -713,7 +811,6 @@ const coverageTemplate = template(
                 return actualCoverage;
             }
         }
-
         return actualCoverage;
     }
 `,
@@ -733,7 +830,6 @@ function shouldIgnoreFile(programNode) {
         programNode.parent.comments.some(c => COMMENT_FILE_RE.test(c.value))
     );
 }
-
 /**
  * programVisitor is a `babel` adaptor for instrumentation.
  * It returns an object with two methods `enter` and `exit`.
@@ -770,7 +866,10 @@ function programVisitor(types, sourceFilePath = 'unknown.js', opts = {}) {
         sourceFilePath,
         opts.inputSourceMap,
         opts.ignoreClassMethods,
-        opts.reportLogic
+        opts.reportLogic,
+        opts.skipFilesAndPackagePaths,
+        opts.skipInstrumentationIfNoSourceMap,
+        opts.customLogger
     );
     return {
         enter(path) {
@@ -780,7 +879,12 @@ function programVisitor(types, sourceFilePath = 'unknown.js', opts = {}) {
             if (alreadyInstrumented(path, visitState)) {
                 return;
             }
-            path.traverse(opts.instrumentLineLevel === false ? methodVisitor : codeVisitor, visitState);
+            path.traverse(
+                opts.instrumentLineLevel === false
+                    ? methodVisitor
+                    : codeVisitor,
+                visitState
+            );
         },
         exit(path) {
             if (alreadyInstrumented(path, visitState)) {
@@ -846,6 +950,7 @@ function programVisitor(types, sourceFilePath = 'unknown.js', opts = {}) {
                 )
             );
             path.node.body.unshift(cv);
+
             return {
                 fileCoverage: coverageData,
                 sourceMappingURL: visitState.sourceMappingURL
@@ -853,5 +958,4 @@ function programVisitor(types, sourceFilePath = 'unknown.js', opts = {}) {
         }
     };
 }
-
 module.exports = programVisitor;

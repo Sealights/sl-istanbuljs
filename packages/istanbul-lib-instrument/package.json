@@ -1,6 +1,6 @@
 {
   "name": "sl-istanbul-lib-instrument",
-  "version": "6.0.2",
+  "version": "6.0.3",
   "original-version": "6.0.2",
   "description": "SL update to the core istanbul API for JS code coverage",
   "author": "Krishnan Anantheswaran <kananthmail-github@yahoo.com>",
@@ -9,7 +9,7 @@
     "src"
   ],
   "scripts": {
-    "test": "nyc mocha"
+    "test": "node --max-old-space-size=10000 ./node_modules/.bin/nyc mocha"
   },
   "dependencies": {
     "@babel/core": "^7.23.9",
