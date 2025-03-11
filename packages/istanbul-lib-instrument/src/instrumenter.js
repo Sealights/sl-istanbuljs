@@ -27,6 +27,9 @@ const readInitialCoverage = require('./read-coverage');
  * @param {array} [opts.parserPlugins] - set babel parser plugins, see @istanbuljs/schema for defaults.
  * @param {string} [opts.coverageGlobalScope=this] the global coverage variable scope.
  * @param {boolean} [opts.coverageGlobalScopeFunc=true] use an evaluated function to find coverageGlobalScope.
+ * @param {boolean} [opts.skipFilesAndPackagePaths=[]] set to array of file paths and package paths to skip instrumenting.
+ * @param {boolean} [opts.skipInstrumentationIfNoSourceMap=false] set to true to skip instrumentation if no source map is provided.
+ * @param {boolean} [opts.customLogger=console] provide a custom logger to log errors and warnings.
  */
 class Instrumenter {
     constructor(opts = {}) {
@@ -81,8 +84,13 @@ class Instrumenter {
                             coverageGlobalScopeFunc:
                                 opts.coverageGlobalScopeFunc,
                             ignoreClassMethods: opts.ignoreClassMethods,
-                          instrumentLineLevel: opts.instrumentLineLevel,
-                            inputSourceMap
+                            instrumentLineLevel: opts.instrumentLineLevel,
+                            inputSourceMap,
+                            skipFilesAndPackagePaths:
+                                opts.skipFilesAndPackagePaths,
+                            skipInstrumentationIfNoSourceMap:
+                                opts.skipInstrumentationIfNoSourceMap,
+                            customLogger: opts.customLogger
                         });
 
                         return {
