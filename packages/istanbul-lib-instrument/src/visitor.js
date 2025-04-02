@@ -196,36 +196,23 @@ class VisitState {
         // Try to get original source file from source map and skip if needed
         if (n.loc && this.sourceMapConsumer) {
             try {
-                // Check if originalPositionFor is a function before calling it
-                if (
-                    typeof this.sourceMapConsumer.originalPositionFor ===
-                    'function'
-                ) {
-                    const originalPosition = this.sourceMapConsumer.originalPositionFor(
-                        {
-                            line: n.loc.start.line,
-                            column: n.loc.start.column
-                        }
-                    );
-                    if (originalPosition && originalPosition.source) {
-                        // Check if the source file or module should be skipped
-                        if (
-                            this.skipFilesAndPackagePaths.some(skipPath =>
-                                originalPosition.source.includes(skipPath)
-                            )
-                        ) {
-                            this.nextIgnore = n;
-                            return;
-                        }
-                    } else {
+                const originalPosition = this.sourceMapConsumer.originalPositionFor(
+                    {
+                        line: n.loc.start.line,
+                        column: n.loc.start.column
+                    }
+                );
+                if (originalPosition && originalPosition.source) {
+                    // Check if the source file or module should be skipped
+                    if (
+                        this.skipFilesAndPackagePaths.some(skipPath =>
+                            originalPosition.source.includes(skipPath)
+                        )
+                    ) {
                         this.nextIgnore = n;
                         return;
                     }
                 } else {
-                    // Log the issue and skip instrumentation for this node
-                    this.customLogger.warn(
-                        'Invalid source map consumer: originalPositionFor is not a function'
-                    );
                     this.nextIgnore = n;
                     return;
                 }
