@@ -46,10 +46,21 @@ function shouldInitializeSourceMapConsumer(
 }
 
 // Function to read the source map from the file
-function readSourceMapFromFile(sourceFilePath) {
-    // First check for inline source map
-    const content = fs.readFileSync(sourceFilePath, 'utf8');
-    const sourceMapMatches = [...content.matchAll(SOURCE_MAP_RE_WITH_IGNORE_PATTERNS)];
+function readSourceMapFromFile(sourceFilePath, workspacePath) {
+    let content = '';
+    let correctPath = '';
+    // Check in the direct sourceFilePath and also in the workspacePath + sourceFilePath
+    if (fs.existsSync(sourceFilePath)) {
+        correctPath = sourceFilePath;
+        content = fs.readFileSync(sourceFilePath, 'utf8');
+    } else if (fs.existsSync(path.resolve(workspacePath, sourceFilePath))) {
+        correctPath = path.resolve(workspacePath, sourceFilePath);
+        content = fs.readFileSync(correctPath, 'utf8');
+    }
+    // Check for source map in the content
+    const sourceMapMatches = [
+        ...content.matchAll(SOURCE_MAP_RE_WITH_IGNORE_PATTERNS)
+    ];
     // Get the last matching source map
     if (sourceMapMatches.length > 0) {
         const sourceMapData = sourceMapMatches[sourceMapMatches.length - 1][1];
@@ -64,7 +75,7 @@ function readSourceMapFromFile(sourceFilePath) {
         } else {
             // Try to read external source map file
             const mapPath = path.resolve(
-                path.dirname(sourceFilePath),
+                path.dirname(correctPath),
                 sourceMapData
             );
             if (fs.existsSync(mapPath)) {
@@ -85,7 +96,8 @@ class VisitState {
         reportLogic = false,
         skipFilesAndPackagePaths = [],
         skipInstrumentationIfNoSourceMap = false,
-        customLogger = null
+        customLogger = null,
+        workspacePath = ''
     ) {
         this.varName = genVar(sourceFilePath);
         this.attrs = {};
@@ -105,7 +117,10 @@ class VisitState {
             )
         ) {
             try {
-                this.sourceMap = readSourceMapFromFile(sourceFilePath);
+                this.sourceMap = readSourceMapFromFile(
+                    sourceFilePath,
+                    workspacePath
+                );
             } catch (err) {
                 this.customLogger.error(
                     `Failed to read source map for ${sourceFilePath}:`,
@@ -854,6 +869,7 @@ function shouldIgnoreFile(programNode) {
  * @param {Array} [opts.ignoreClassMethods=[]] names of methods to ignore by default on classes.
  * @param {object} [opts.inputSourceMap=undefined] the input source map, that maps the uninstrumented code back to the
  * @param {boolean} [opts.instrumentLineLevel] when true instrumentation should be done on line/branch level. otherwise only on method level.
+ * @param {string} [opts.workspacePath] the workspace path, when using relative sl-mapping this is required parameter
  * original code.
  */
 function programVisitor(types, sourceFilePath = 'unknown.js', opts = {}) {
@@ -870,7 +886,8 @@ function programVisitor(types, sourceFilePath = 'unknown.js', opts = {}) {
         opts.reportLogic,
         opts.skipFilesAndPackagePaths,
         opts.skipInstrumentationIfNoSourceMap,
-        opts.customLogger
+        opts.customLogger,
+        opts.workspacePath
     );
     return {
         enter(path) {

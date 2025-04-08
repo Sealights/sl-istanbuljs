@@ -30,6 +30,7 @@ const readInitialCoverage = require('./read-coverage');
  * @param {boolean} [opts.skipFilesAndPackagePaths=[]] set to array of file paths and package paths to skip instrumenting.
  * @param {boolean} [opts.skipInstrumentationIfNoSourceMap=false] set to true to skip instrumentation if no source map is provided.
  * @param {boolean} [opts.customLogger=console] provide a custom logger to log errors and warnings.
+ * @param {string} [opts.workspacePath] the workspace path, when using relative sl-mapping this is required parameter
  */
 class Instrumenter {
     constructor(opts = {}) {
@@ -90,7 +91,8 @@ class Instrumenter {
                                 opts.skipFilesAndPackagePaths,
                             skipInstrumentationIfNoSourceMap:
                                 opts.skipInstrumentationIfNoSourceMap,
-                            customLogger: opts.customLogger
+                            customLogger: opts.customLogger,
+                            workspacePath: opts.workspacePath
                         });
 
                         return {
