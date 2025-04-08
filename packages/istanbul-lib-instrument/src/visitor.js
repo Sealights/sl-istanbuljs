@@ -95,6 +95,7 @@ class VisitState {
         this.skipFilesAndPackagePaths = skipFilesAndPackagePaths;
         this.skipInstrumentationIfNoSourceMap = skipInstrumentationIfNoSourceMap;
         this.customLogger = customLogger || console;
+        this.sourceMap = null;
         // Try to read source map if not provided and either skip files and package paths is provided or skip instrumentation is true
         if (
             shouldTryToReadSourceMap(
@@ -104,7 +105,7 @@ class VisitState {
             )
         ) {
             try {
-                inputSourceMap = readSourceMapFromFile(sourceFilePath);
+                this.sourceMap = readSourceMapFromFile(sourceFilePath);
             } catch (err) {
                 this.customLogger.error(
                     `Failed to read source map for ${sourceFilePath}:`,
@@ -112,7 +113,7 @@ class VisitState {
                 );
             }
         }
-        if (typeof inputSourceMap !== 'undefined') {
+        if (typeof inputSourceMap !== 'undefined' || this.sourceMap) {
             this.cov.inputSourceMap(inputSourceMap);
             // Initialize the source map consumer once and cache it
             if (
@@ -125,7 +126,7 @@ class VisitState {
                     const sourceMap = require('source-map');
                     const SourceMapConsumer = sourceMap.SourceMapConsumer;
                     this.sourceMapConsumer = new SourceMapConsumer(
-                        inputSourceMap
+                        this.sourceMap || inputSourceMap
                     );
                 } catch (err) {
                     this.customLogger.error(
