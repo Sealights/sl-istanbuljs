@@ -17,8 +17,39 @@ const SOURCE_MAP_RE_WITH_IGNORE_PATTERNS = /[#@]\s*sourceMappingURL=(.*)\s*$/gm;
 
 // generate a variable name from hashing the supplied file path
 function genVar(filename) {
+    // Ensure we always use the absolute path to guarantee uniqueness
+    // This prevents conflicts when multiple files have the same basename
+    const absolutePath = path.resolve(filename);
+    
+    // Try to find package.json to include package name for better uniqueness
+    let packageName = '';
+    let packageVersion = '';
+    try {
+        let dir = path.dirname(absolutePath);
+        while (dir !== path.dirname(dir)) { // Stop at root
+            const packagePath = path.join(dir, 'package.json');
+            if (fs.existsSync(packagePath)) {
+                const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+                packageName = pkg.name || '';
+                packageVersion = pkg.version || '';
+                break;
+            }
+            dir = path.dirname(dir);
+        }
+    } catch (e) {
+        // Ignore errors, packageName and packageVersion will remain empty
+    }
+    
+    // Add current working directory for additional context
+    const cwd = process.cwd();
+    
+    // Combine all identifying information for maximum deterministic uniqueness
+    // Format: packageName:packageVersion:cwd:absolutePath
+    const components = [packageName, packageVersion, cwd, absolutePath].filter(Boolean);
+    const uniqueId = components.join(':');
+    
     const hash = createHash(SHA);
-    hash.update(filename);
+    hash.update(uniqueId);
     return 'cov_' + parseInt(hash.digest('hex').substr(0, 12), 16).toString(36);
 }
 
