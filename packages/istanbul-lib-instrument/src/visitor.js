@@ -97,9 +97,10 @@ class VisitState {
         skipFilesAndPackagePaths = [],
         skipInstrumentationIfNoSourceMap = false,
         customLogger = null,
-        workspacePath = ''
+        workspacePath = '',
+        appName = ''
     ) {
-        this.varName = genVar(sourceFilePath);
+        this.varName = genVar(sourceFilePath, appName);
         this.attrs = {};
         this.nextIgnore = null;
         this.cov = new SourceCoverage(sourceFilePath);
