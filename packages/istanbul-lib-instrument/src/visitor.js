@@ -888,7 +888,8 @@ function programVisitor(types, sourceFilePath = 'unknown.js', opts = {}) {
         opts.skipFilesAndPackagePaths,
         opts.skipInstrumentationIfNoSourceMap,
         opts.customLogger,
-        opts.workspacePath
+        opts.workspacePath,
+        opts.appName
     );
     return {
         enter(path) {
