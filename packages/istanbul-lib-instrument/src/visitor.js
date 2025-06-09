@@ -5,6 +5,7 @@ const { SourceCoverage } = require('./source-coverage');
 const { SHA, MAGIC_KEY, MAGIC_VALUE } = require('./constants');
 const fs = require('fs');
 const path = require('path');
+const uuid = require('uuid');
 
 // pattern for istanbul to ignore a section
 const COMMENT_RE = /^\s*istanbul\s+ignore\s+(if|else|next)(?=\W|$)/;
@@ -15,11 +16,8 @@ const SOURCE_MAP_RE = /[#@]\s*sourceMappingURL=(.*)\s*$/m;
 // source map URL pattern when ignore patterns are provided
 const SOURCE_MAP_RE_WITH_IGNORE_PATTERNS = /[#@]\s*sourceMappingURL=(.*)\s*$/gm;
 
-// generate a variable name from hashing the supplied file path
-function genVar(filename, appName) {
-    const hash = createHash(SHA);
-    hash.update(`${filename}_${appName}`);
-    return 'cov_' + parseInt(hash.digest('hex').substr(0, 12), 16).toString(36);
+function genVar() {
+    return 'cov_' + uuid.v4().replaceAll('-', '');
 }
 
 // Determine if we should try to read the source map from the file in order to skip instrumentation of files and package paths
@@ -97,10 +95,9 @@ class VisitState {
         skipFilesAndPackagePaths = [],
         skipInstrumentationIfNoSourceMap = false,
         customLogger = null,
-        workspacePath = '',
-        appName = ''
+        workspacePath = ''
     ) {
-        this.varName = genVar(sourceFilePath, appName);
+        this.varName = genVar();
         this.attrs = {};
         this.nextIgnore = null;
         this.cov = new SourceCoverage(sourceFilePath);
@@ -888,8 +885,7 @@ function programVisitor(types, sourceFilePath = 'unknown.js', opts = {}) {
         opts.skipFilesAndPackagePaths,
         opts.skipInstrumentationIfNoSourceMap,
         opts.customLogger,
-        opts.workspacePath,
-        opts.appName
+        opts.workspacePath
     );
     return {
         enter(path) {
