@@ -3,6 +3,8 @@
 const { assert } = require('chai');
 const Instrumenter = require('../src/instrumenter');
 
+const uuid = require('uuid');
+
 function instrument(code, inputSourceMap) {
     const instrumenter = new Instrumenter({ compact: false });
     const result = instrumenter.instrumentSync(
@@ -17,9 +19,13 @@ function instrument(code, inputSourceMap) {
     };
 }
 
-const instrumented = instrument(`console.log('basic test');`);
-
 it('should not alter already instrumented code', () => {
+    // Mock uuid v4 to return a fixed value
+    const mockUuid = () => '1234567890';
+    uuid.v4 = mockUuid;
+
+    const instrumented = instrument(`console.log('basic test');`);
+
     const result = instrument(instrumented.code, instrumented.sourceMap);
     [instrumented, result].forEach(({ sourceMap }) => {
         // XXX Ignore source-map difference caused by:
