@@ -20,9 +20,11 @@ function instrument(code, inputSourceMap) {
 }
 
 it('should not alter already instrumented code', () => {
-    // Mock uuid v4 to return a fixed value
-    const mockUuid = () => '1234567890';
-    uuid.v4 = mockUuid;
+    // uuid@11 exports v4 as a getter; assignment does not stick
+    Object.defineProperty(uuid, 'v4', {
+        configurable: true,
+        value: () => '1234567890'
+    });
 
     const instrumented = instrument(`console.log('basic test');`);
 
