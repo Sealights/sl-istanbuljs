@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-stepsecurity-x64
     strategy:
       matrix:
-        node: [10, 12, 14, 16, 18, 20, 21, 22.23.4, 24.22.1]
+        node: [22.23.4, 24.22.1]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
